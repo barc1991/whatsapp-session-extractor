@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 350px;
+      padding: 20px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #075e54;
+      color: white;
+      margin: 0;
+    }
+    .container {
+      text-align: center;
+    }
+    h2 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+    }
+    .subtitle {
+      font-size: 12px;
+      opacity: 0.8;
+      margin-bottom: 20px;
+    }
+    button {
+      background: #25d366;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 24px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.3s;
+      margin-bottom: 10px;
+    }
+    button:hover {
+      background: #128c7e;
+      transform: scale(1.02);
+    }
+    button:disabled {
+      background: #666;
+      cursor: not-allowed;
+      transform: none;
+    }
+    #status {
+      margin-top: 15px;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      background: rgba(255,255,255,0.1);
+    }
+    .status-success {
+      background: #25d366 !important;
+      color: white;
+    }
+    .status-error {
+      background: #ff6b6b !important;
+      color: white;
+    }
+    .status-info {
+      background: #4a9eff !important;
+      color: white;
+    }
+    .loader {
+      display: none;
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #25d366;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      animation: spin 1s linear infinite;
+      margin: 10px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .info-text {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-top: 15px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+      padding-top: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>📱 WhatsApp Session Extractor</h2>
+    <div class="subtitle">Extraia sua sessão do WhatsApp Web</div>
+    
+    <button id="extractBtn">🔄 Extrair Sessão</button>
+    <div class="loader" id="loader"></div>
+    <div id="status">Pronto para extrair</div>
+    
+    <div class="info-text">
+      Certifique-se de estar logado no WhatsApp Web<br>
+      Os dados serão salvos como wa-session.json
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
