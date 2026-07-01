@@ -1,12 +1,20 @@
-document.addEventListener('DOMContentLoaded', function() {
-  const extractBtn = document.getElementById('extractBtn');
-  const status = document.getElementById('status');
-  const loader = document.getElementById('loader');
+const WA_URL = 'web.whatsapp.com';
 
-  // Verificar se estamos em uma aba do WhatsApp
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+// Guarda o último JSON extraído para os botões "Copiar" e "Baixar novamente".
+let lastResult = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  const extractBtn = document.getElementById('extractBtn');
+  const copyBtn = document.getElementById('copyBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const actions = document.getElementById('actions');
+  const loader = document.getElementById('loader');
+  const versionLine = document.getElementById('versionLine');
+
+  // Verifica se a aba ativa é o WhatsApp Web.
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const url = tabs[0]?.url || '';
-    if (!url.includes('web.whatsapp.com')) {
+    if (!url.includes(WA_URL)) {
       setStatus('⚠️ Abra o WhatsApp Web primeiro', 'error');
       extractBtn.disabled = true;
     } else {
@@ -15,55 +23,105 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  extractBtn.addEventListener('click', function() {
+  extractBtn.addEventListener('click', () => {
     extractBtn.disabled = true;
+    actions.hidden = true;
+    versionLine.hidden = true;
     loader.style.display = 'block';
-    setStatus('🔄 Extraindo dados...', 'info');
+    setStatus('🔄 Extraindo sessão...', 'info');
 
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      if (!tabs[0]?.url?.includes('web.whatsapp.com')) {
-        setStatus('❌ Abra o WhatsApp Web', 'error');
-        extractBtn.disabled = false;
-        loader.style.display = 'none';
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (!tab?.url?.includes(WA_URL)) {
+        finishError('Abra o WhatsApp Web e faça login antes de extrair.');
         return;
       }
 
-      chrome.scripting.executeScript({
-        target: {tabId: tabs[0].id},
-        function: extractWhatsAppSession
-      }, (results) => {
-        loader.style.display = 'none';
-        extractBtn.disabled = false;
-        
-        if (chrome.runtime.lastError) {
-          setStatus('❌ Erro: ' + chrome.runtime.lastError.message, 'error');
-          return;
-        }
+      chrome.scripting.executeScript(
+        {
+          target: { tabId: tab.id },
+          world: 'MAIN', // acesso a window.Debug p/ detectar a versão do WhatsApp Web
+          func: extractWhatsAppSession,
+        },
+        (results) => {
+          loader.style.display = 'none';
+          extractBtn.disabled = false;
 
-        if (results && results[0] && results[0].result) {
+          if (chrome.runtime.lastError) {
+            finishError(chrome.runtime.lastError.message);
+            return;
+          }
+
+          const res = results && results[0] && results[0].result;
+          if (!res) {
+            finishError('Não foi possível executar a extração na página.');
+            return;
+          }
+          if (!res.success) {
+            finishError(res.error || 'Falha desconhecida na extração.');
+            return;
+          }
+
+          lastResult = res;
+          downloadSession(res);
           setStatus('✅ Sessão extraída com sucesso!', 'success');
-          // O download é iniciado pelo código injetado
-        } else {
-          setStatus('❌ Falha ao extrair. Tente novamente.', 'error');
+          actions.hidden = false;
+
+          const v = res.meta && res.meta.waWebVersion;
+          versionLine.textContent = v
+            ? `Versão do WhatsApp Web: ${v}`
+            : 'Versão do WhatsApp Web: não detectada';
+          versionLine.hidden = false;
         }
-      });
+      );
     });
   });
 
-  function setStatus(msg, type = 'info') {
-    const status = document.getElementById('status');
-    status.textContent = msg;
-    status.className = '';
-    if (type === 'success') status.classList.add('status-success');
-    else if (type === 'error') status.classList.add('status-error');
-    else if (type === 'info') status.classList.add('status-info');
+  copyBtn.addEventListener('click', async () => {
+    if (!lastResult) return;
+    try {
+      await navigator.clipboard.writeText(lastResult.json);
+      setStatus('📋 JSON copiado para a área de transferência!', 'success');
+    } catch (e) {
+      setStatus('❌ Não foi possível copiar: ' + e.message, 'error');
+    }
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (lastResult) downloadSession(lastResult);
+  });
+
+  function finishError(msg) {
+    loader.style.display = 'none';
+    extractBtn.disabled = false;
+    setStatus('❌ ' + msg, 'error');
   }
 });
 
-// Função que será injetada na página
+// Dispara o download do JSON a partir do popup (centraliza a lógica de saída).
+function downloadSession(res) {
+  const blob = new Blob([res.json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = res.filename || 'wa-session.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function setStatus(msg, type = 'info') {
+  const status = document.getElementById('status');
+  status.textContent = msg;
+  status.className = 'status status-' + type;
+}
+
+// ---------------------------------------------------------------------------
+// Função injetada na página (mundo MAIN). Não pode usar APIs `chrome`.
+// Retorna sempre { success, ... } para que o popup mostre a causa real de erros.
+// ---------------------------------------------------------------------------
 function extractWhatsAppSession() {
-  // Seu código de extração aqui
-  // (o mesmo código fornecido)
   return (async () => {
     const b64 = (bytes) => {
       const arr = bytes instanceof ArrayBuffer ? new Uint8Array(bytes)
@@ -85,6 +143,29 @@ function extractWhatsAppSession() {
         g.onerror = () => { db.close(); rej(g.error); };
       };
     });
+
+    // Detecção best-effort da versão do WhatsApp Web (multi-fonte, com fallback null).
+    const detectWaVersion = () => {
+      const semver = /\d+\.\d+\.\d+(?:\.\d+)?/;
+      try {
+        const v = window.Debug && window.Debug.VERSION;
+        if (v && semver.test(String(v))) return String(v).match(semver)[0];
+      } catch { /* ignore */ }
+      try {
+        const meta = document.querySelector('meta[name="version"]');
+        if (meta && meta.content && semver.test(meta.content)) return meta.content.match(semver)[0];
+      } catch { /* ignore */ }
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k || !/version/i.test(k)) continue;
+          const val = localStorage.getItem(k) || '';
+          const m = val.match(semver);
+          if (m) return m[0];
+        }
+      } catch { /* ignore */ }
+      return null;
+    };
 
     try {
       // ---- Noise keypair: candidatos (o whatsmeow escolhe o válido via priv->pub) ----
@@ -134,29 +215,32 @@ function extractWhatsAppSession() {
       const id = norm(lsj('last-wid-md'));
       const lid = norm(lsj('WALid'));
 
+      const waWebVersion = detectWaVersion();
+
       const out = {
         noiseCandidates, identityKey, registrationId,
         advSecretKey: noise.recoveryToken ?? null,
         account, id, lid, platform: 'android',
+        _meta: {
+          waWebVersion,
+          extractedAt: new Date().toISOString(),
+          userAgent: navigator.userAgent,
+          extractorVersion: '1.1',
+        },
         _raw: { lastWidMd: ls('last-wid-md'), waLid: ls('WALid') },
       };
 
       const json = JSON.stringify(out, null, 2);
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15); // YYYYMMDD-HHmmss-ish
+      const filename = `wa-session-${stamp.slice(0, 8)}-${stamp.slice(8)}.json`;
+
       console.log('%c[extract] OK', 'color:green;font-weight:bold',
-        { noiseCandidates: noiseCandidates.length, id, lid, registrationId });
-      console.log(json);
-      
-      try { copy(out); console.log('%c[extract] JSON copiado pro clipboard.', 'color:green'); } catch {}
-      try {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-        a.download = 'wa-session.json'; a.click();
-        console.log('%c[extract] download de wa-session.json iniciado.', 'color:green');
-      } catch {}
-      return out;
+        { noiseCandidates: noiseCandidates.length, id, lid, registrationId, waWebVersion });
+
+      return { success: true, json, filename, meta: out._meta };
     } catch (error) {
-      console.error('Erro na extração:', error);
-      throw error;
+      console.error('[extract] erro:', error);
+      return { success: false, error: String(error && error.message ? error.message : error) };
     }
   })();
 }
