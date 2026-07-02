@@ -93,9 +93,17 @@ Selecione o formato **Ticketz** antes de extrair (ou troque o formato depois da 
 - Um JSON no padrão que o Ticketz usa — objeto `{ "creds": { ... }, "keys": {} }` com as chaves binárias no formato `{ "type": "Buffer", "data": "<base64>" }` (o mesmo formato do Baileys). O arquivo baixado é `ticketz-session-AAAAMMDD-HHMMSS.json`.
 - Um **token** alfanumérico de 30 caracteres (ex.: `zW1PGcsch29HlroKaPpYoYb0NvT7Dy`), exibido no popup com botão de copiar, para preencher a **coluna `token`** da conexão no Ticketz.
 
+O JSON traz o **schema completo** do `creds` do Baileys (todas as chaves presentes):
+
+- **Extraídos do WhatsApp Web:** `noiseKey`, `signedIdentityKey`, `signedPreKey` (par + assinatura + `keyId`), `account`, `registrationId`, `advSecretKey`, `signalIdentities`, `me.id`/`me.lid` e, quando disponíveis, `me.name` e `routingInfo`.
+- **`pairingEphemeralKeyPair`** é gerado na hora (não é persistido pelo WhatsApp Web e não é usado após o pareamento — só precisa existir e estar bem-formado).
+- **Defaults** para campos que são estado de execução do Baileys e o WhatsApp Web não guarda: `myAppStateKeyId` (`null`), `lastPropHash` (`null`), `lastAccountSyncTimestamp` (`0`), `reachoutTimeLock`, contadores de pre-key. O cliente os repopula ao conectar — não impedem a reconexão.
+
 Para importar: grave o JSON na coluna `session` da conexão e o token na coluna `token`.
 
 > Como no Baileys, quando há mais de um candidato de chave Noise a extensão usa o primeiro. Se a conexão não subir, extraia novamente ou ajuste `creds.noiseKey` para outro candidato.
+>
+> Se o Ticketz reclamar do `signedPreKey`, abra o console (F12) na página do WhatsApp e veja o log `[extract] signedPreKey` — ele mostra o tamanho da chave privada (esperado 32) e da assinatura (esperado 64).
 
 ### 📂 Estrutura do JSON gerado
 

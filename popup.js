@@ -183,17 +183,34 @@ function randomToken(len = 30) {
 
 // Converte os dados extraídos para o JSON de sessão que o Ticketz importa:
 // objeto { creds, keys } com as chaves binárias no formato Buffer.
+// A ordem das chaves segue o padrão do Baileys/Ticketz para ficar idêntico.
 // O WhatsApp Web pode expor vários candidatos de chave Noise; usamos o
 // primeiro (o cliente valida o par private→public ao conectar).
+//
+// Campos de tempo de execução do Baileys que o WhatsApp Web não guarda
+// (myAppStateKeyId, lastPropHash, lastAccountSyncTimestamp, routingInfo) saem
+// com defaults válidos — o cliente os repopula sozinho ao conectar.
 function buildTicketzSession(data) {
   const noise = (data.noiseCandidates && data.noiseCandidates[0]) || null;
+  const sp = data.signedPreKey || null;
+  const eph = data.pairingEphemeralKeyPair || null;
 
   const creds = {
     noiseKey: noise ? { private: buf(noise.private), public: buf(noise.public) } : null,
+    pairingEphemeralKeyPair: eph
+      ? { private: buf(eph.private), public: buf(eph.public) }
+      : null,
     signedIdentityKey: {
       private: buf(data.identityKey.private),
       public: buf(data.identityKey.public),
     },
+    signedPreKey: sp
+      ? {
+          keyPair: { private: buf(sp.private), public: buf(sp.public) },
+          signature: buf(sp.signature),
+          keyId: sp.keyId,
+        }
+      : null,
     registrationId: data.registrationId,
     advSecretKey: data.advSecretKey,
     processedHistoryMessages: [],
@@ -208,7 +225,7 @@ function buildTicketzSession(data) {
       accountSignature: buf(data.account.accountSignature),
       deviceSignature: buf(data.account.deviceSignature),
     },
-    me: { id: data.id, ...(data.lid ? { lid: data.lid } : {}) },
+    me: { id: data.id, name: data.pushName ?? '', lid: data.lid ?? null },
     signalIdentities: data.lid
       ? [{
           identifier: { name: data.lid.replace('@s.whatsapp.net', '@lid'), deviceId: 0 },
@@ -216,6 +233,11 @@ function buildTicketzSession(data) {
         }]
       : [],
     platform: data.platform,
+    routingInfo: data.routingInfo ? buf(data.routingInfo) : null,
+    lastAccountSyncTimestamp: 0,
+    myAppStateKeyId: null,
+    reachoutTimeLock: { isActive: false, enforcementType: 'DEFAULT' },
+    lastPropHash: null,
   };
 
   return { creds, keys: {} };
@@ -253,6 +275,45 @@ function extractWhatsAppSession() {
         g.onerror = () => { db.close(); rej(g.error); };
       };
     });
+
+    const getAllRecords = (dbName, storeName) => new Promise((res, rej) => {
+      const r = indexedDB.open(dbName);
+      r.onerror = () => rej(r.error);
+      r.onsuccess = () => {
+        const db = r.result; const tx = db.transaction(storeName, 'readonly');
+        const g = tx.objectStore(storeName).getAll();
+        g.onsuccess = () => { db.close(); res(g.result || []); };
+        g.onerror = () => { db.close(); rej(g.error); };
+      };
+    });
+
+    // AES-CTR (contador zero) — mesmo esquema que o WhatsApp Web usa para os
+    // campos privados guardados junto de um `encKey` (identidade estática, etc.).
+    const decCtr = (encKey, valueBuf) => crypto.subtle.decrypt(
+      { name: 'AES-CTR', counter: new Uint8Array(16), length: 64 }, encKey, valueBuf);
+
+    // Devolve um campo do IndexedDB em base64, decriptando se vier no formato
+    // { encKey, value }; caso contrário trata como bytes crus (públicos).
+    const maybeField = async (f) => {
+      if (f && f.encKey && f.value) return b64(await decCtr(f.encKey, f.value));
+      return b64(f);
+    };
+
+    // Gera um par efêmero X25519 (pairingEphemeralKeyPair). Só precisa existir e
+    // ser bem-tipado — não é usado após o pareamento. Fallback: bytes aleatórios.
+    const genX25519 = async () => {
+      try {
+        const kp = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+        const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+        const pk8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+        return { private: b64(pk8.slice(pk8.length - 32)), public: b64(pub) };
+      } catch {
+        return {
+          private: b64(crypto.getRandomValues(new Uint8Array(32))),
+          public: b64(crypto.getRandomValues(new Uint8Array(32))),
+        };
+      }
+    };
 
     // Detecção best-effort da versão do WhatsApp Web (multi-fonte, com fallback null).
     const detectWaVersion = () => {
@@ -300,8 +361,7 @@ function extractWhatsAppSession() {
       // ---- Identidade Signal estática (AES-CTR com o encKey do próprio registro) ----
       const decStatic = async (name) => {
         const rec = await getRecord('signal-storage', 'signal-meta-store', name);
-        const pt = await crypto.subtle.decrypt(
-          { name: 'AES-CTR', counter: new Uint8Array(16), length: 64 }, rec.value.encKey, rec.value.value);
+        const pt = await decCtr(rec.value.encKey, rec.value.value);
         if (pt.byteLength !== 32) throw new Error(name + ' tamanho inesperado ' + pt.byteLength);
         return b64(pt);
       };
@@ -325,17 +385,71 @@ function extractWhatsAppSession() {
       const id = norm(lsj('last-wid-md'));
       const lid = norm(lsj('WALid'));
 
+      // ---- Signed pre-key (signal-storage/signed-prekey-store) ----
+      // Registro { keyId, keyPair:{pubKey,privKey}, signature }. Campos privados
+      // podem vir cifrados ({encKey,value}) ou crus — maybeField trata os dois.
+      let signedPreKey = null;
+      try {
+        const recs = await getAllRecords('signal-storage', 'signed-prekey-store');
+        const rec = recs.length
+          ? recs.reduce((a, b) => (Number(b.keyId) > Number(a.keyId) ? b : a))
+          : null;
+        if (rec && rec.keyPair) {
+          signedPreKey = {
+            keyId: Number(rec.keyId),
+            private: await maybeField(rec.keyPair.privKey),
+            public: await maybeField(rec.keyPair.pubKey),
+            signature: await maybeField(rec.signature),
+          };
+          const privLen = fromB64(signedPreKey.private).length;
+          const sigLen = fromB64(signedPreKey.signature).length;
+          console.log('[extract] signedPreKey', { keyId: signedPreKey.keyId, privLen, sigLen });
+          if (privLen !== 32) console.warn('[extract] signedPreKey.private len inesperado:', privLen);
+          if (sigLen !== 64) console.warn('[extract] signedPreKey.signature len inesperado:', sigLen);
+        } else {
+          console.warn('[extract] signed-prekey-store vazio');
+        }
+      } catch (e) {
+        console.warn('[extract] falha ao ler signed-prekey-store:', e);
+      }
+
+      // ---- Par efêmero de pareamento (gerado; não persistido pelo WA Web) ----
+      const pairingEphemeralKeyPair = await genX25519();
+
+      // ---- Push name (model-storage/contact do próprio JID), best-effort ----
+      let pushName = null;
+      try {
+        const own = await getRecord('model-storage', 'contact', id);
+        pushName = (own && (own.pushname || own.name)) || null;
+      } catch { /* sem contato próprio */ }
+
+      // ---- Routing info (localStorage, chave incerta), best-effort ----
+      // Campo opcional no Baileys; só usamos se o valor já parecer base64,
+      // para não arriscar dupla codificação. Senão fica null.
+      let routingInfo = null;
+      try {
+        const isB64 = (s) => /^[A-Za-z0-9+/]{2,}={0,2}$/.test(s);
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && /rout/i.test(k)) {
+            const raw = (ls(k) || '').trim();
+            if (raw && isB64(raw)) { routingInfo = raw; break; }
+          }
+        }
+      } catch { /* ignore */ }
+
       const waWebVersion = detectWaVersion();
 
       const out = {
         noiseCandidates, identityKey, registrationId,
         advSecretKey: noise.recoveryToken ?? null,
         account, id, lid, platform: 'android',
+        signedPreKey, pairingEphemeralKeyPair, pushName, routingInfo,
         _meta: {
           waWebVersion,
           extractedAt: new Date().toISOString(),
           userAgent: navigator.userAgent,
-          extractorVersion: '1.1',
+          extractorVersion: '1.2',
         },
         _raw: { lastWidMd: ls('last-wid-md'), waLid: ls('WALid') },
       };
@@ -345,7 +459,8 @@ function extractWhatsAppSession() {
       const filename = `wa-session-${stamp.slice(0, 8)}-${stamp.slice(8)}.json`;
 
       console.log('%c[extract] OK', 'color:green;font-weight:bold',
-        { noiseCandidates: noiseCandidates.length, id, lid, registrationId, waWebVersion });
+        { noiseCandidates: noiseCandidates.length, id, lid, registrationId, waWebVersion,
+          signedPreKey: !!signedPreKey, pushName, routingInfo: !!routingInfo });
 
       return { success: true, json, filename, meta: out._meta, data: out };
     } catch (error) {
