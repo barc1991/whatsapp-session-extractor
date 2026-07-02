@@ -54,6 +54,56 @@
     .status-error   { background: #fdecea; color: var(--danger); }
     .status-info    { background: #e8f2fe; color: var(--info); }
 
+    .formats {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+    .format-opt {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .format-opt:hover { background: #f0f4f4; }
+    .format-opt input { accent-color: var(--wa-green); margin: 0; }
+    .format-opt code {
+      background: #eef1f2;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+
+    .token {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #eef7f3;
+      border: 1px solid #cfe9de;
+    }
+    .token-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .token-label code {
+      background: #dceee6;
+      padding: 1px 4px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .token-row { display: flex; align-items: center; gap: 8px; }
+    .token-value {
+      flex: 1;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 12px;
+      word-break: break-all;
+      color: var(--ink);
+    }
+    .token-copy { flex: 0 0 auto; padding: 6px 10px; }
+
     .btn-primary {
       display: block;
       width: 100%;
@@ -143,6 +193,17 @@
   <main>
     <div id="status" class="status">Verificando...</div>
 
+    <div class="formats" role="radiogroup" aria-label="Formato de exportação">
+      <label class="format-opt">
+        <input type="radio" name="format" value="baileys" checked>
+        <span>Baileys <code>wa-session.json</code></span>
+      </label>
+      <label class="format-opt">
+        <input type="radio" name="format" value="ticketz">
+        <span>Ticketz <code>{ creds, keys }</code></span>
+      </label>
+    </div>
+
     <button id="extractBtn" class="btn-primary" disabled>Extrair sessão</button>
     <div class="loader" id="loader"></div>
 
@@ -151,10 +212,20 @@
       <button id="downloadBtn" class="btn-secondary">⬇️ Baixar de novo</button>
     </div>
 
+    <div class="token" id="tokenLine" hidden>
+      <div class="token-label">Token (coluna <code>token</code> do Ticketz):</div>
+      <div class="token-row">
+        <code id="tokenValue" class="token-value"></code>
+        <button id="copyTokenBtn" class="btn-secondary token-copy">📋</button>
+      </div>
+    </div>
+
     <div class="version" id="versionLine" hidden></div>
 
     <p class="hint">
-      Gera o arquivo <code>wa-session.json</code> para importar no Baileys.
+      Exporta a sessão do WhatsApp Web no formato <strong>Baileys</strong>
+      (<code>wa-session.json</code>) ou <strong>Ticketz</strong>
+      (JSON <code>{ creds, keys }</code> + token).
     </p>
 
     <div class="warning">

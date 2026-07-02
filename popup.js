@@ -10,6 +10,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const actions = document.getElementById('actions');
   const loader = document.getElementById('loader');
   const versionLine = document.getElementById('versionLine');
+  const tokenLine = document.getElementById('tokenLine');
+  const tokenValue = document.getElementById('tokenValue');
+  const copyTokenBtn = document.getElementById('copyTokenBtn');
+
+  // Formato de exportação atualmente selecionado ('baileys' | 'ticketz').
+  const getFormat = () =>
+    document.querySelector('input[name="format"]:checked')?.value || 'baileys';
+
+  // Ao trocar o formato após uma extração, regera o arquivo/exibição correspondente.
+  document.querySelectorAll('input[name="format"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (lastResult) refreshFormat();
+    });
+  });
 
   // Verifica se a aba ativa é o WhatsApp Web.
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -63,7 +77,9 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           lastResult = res;
-          downloadSession(res);
+          // Um token novo por extração — usado na coluna `token` do Ticketz.
+          lastResult.token = randomToken();
+          refreshFormat();
           setStatus('✅ Sessão extraída com sucesso!', 'success');
           actions.hidden = false;
 
@@ -78,18 +94,49 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   copyBtn.addEventListener('click', async () => {
-    if (!lastResult) return;
+    if (!lastResult?.current) return;
     try {
-      await navigator.clipboard.writeText(lastResult.json);
+      await navigator.clipboard.writeText(lastResult.current.json);
       setStatus('📋 JSON copiado para a área de transferência!', 'success');
     } catch (e) {
       setStatus('❌ Não foi possível copiar: ' + e.message, 'error');
     }
   });
 
-  downloadBtn.addEventListener('click', () => {
-    if (lastResult) downloadSession(lastResult);
+  copyTokenBtn.addEventListener('click', async () => {
+    if (!lastResult?.token) return;
+    try {
+      await navigator.clipboard.writeText(lastResult.token);
+      setStatus('📋 Token copiado para a área de transferência!', 'success');
+    } catch (e) {
+      setStatus('❌ Não foi possível copiar: ' + e.message, 'error');
+    }
   });
+
+  downloadBtn.addEventListener('click', () => {
+    if (lastResult?.current) downloadSession(lastResult.current);
+  });
+
+  // Monta a saída para o formato selecionado, dispara o download e
+  // atualiza a exibição do token (apenas relevante para o Ticketz).
+  function refreshFormat() {
+    if (!lastResult) return;
+    if (getFormat() === 'ticketz') {
+      const session = buildTicketzSession(lastResult.data);
+      lastResult.current = {
+        json: JSON.stringify(session, null, 2),
+        filename: (lastResult.filename || 'wa-session.json')
+          .replace(/\.json$/, '')
+          .replace(/^wa-session/, 'ticketz-session') + '.json',
+      };
+      tokenValue.textContent = lastResult.token;
+      tokenLine.hidden = false;
+    } else {
+      lastResult.current = { json: lastResult.json, filename: lastResult.filename };
+      tokenLine.hidden = true;
+    }
+    downloadSession(lastResult.current);
+  }
 
   function finishError(msg) {
     loader.style.display = 'none';
@@ -109,6 +156,69 @@ function downloadSession(res) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Envelopa uma string base64 no formato Buffer que o Baileys/Ticketz espera.
+function buf(b64) {
+  return { type: 'Buffer', data: b64 };
+}
+
+// Prefixa a chave pública (base64) com o byte 0x05 do protocolo Signal e
+// devolve novamente em base64 — usado no `identifierKey` de signalIdentities.
+function signalPubKey(b64) {
+  const raw = atob(b64);
+  let out = String.fromCharCode(5);
+  out += raw;
+  return btoa(out);
+}
+
+// Gera um token alfanumérico de 30 caracteres (coluna `token` do Ticketz).
+function randomToken(len = 30) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = crypto.getRandomValues(new Uint8Array(len));
+  let s = '';
+  for (const b of bytes) s += alphabet[b % alphabet.length];
+  return s;
+}
+
+// Converte os dados extraídos para o JSON de sessão que o Ticketz importa:
+// objeto { creds, keys } com as chaves binárias no formato Buffer.
+// O WhatsApp Web pode expor vários candidatos de chave Noise; usamos o
+// primeiro (o cliente valida o par private→public ao conectar).
+function buildTicketzSession(data) {
+  const noise = (data.noiseCandidates && data.noiseCandidates[0]) || null;
+
+  const creds = {
+    noiseKey: noise ? { private: buf(noise.private), public: buf(noise.public) } : null,
+    signedIdentityKey: {
+      private: buf(data.identityKey.private),
+      public: buf(data.identityKey.public),
+    },
+    registrationId: data.registrationId,
+    advSecretKey: data.advSecretKey,
+    processedHistoryMessages: [],
+    nextPreKeyId: 1,
+    firstUnuploadedPreKeyId: 1,
+    accountSyncCounter: 0,
+    accountSettings: { unarchiveChats: false },
+    registered: true,
+    account: {
+      details: buf(data.account.details),
+      accountSignatureKey: buf(data.account.accountSignatureKey),
+      accountSignature: buf(data.account.accountSignature),
+      deviceSignature: buf(data.account.deviceSignature),
+    },
+    me: { id: data.id, ...(data.lid ? { lid: data.lid } : {}) },
+    signalIdentities: data.lid
+      ? [{
+          identifier: { name: data.lid.replace('@s.whatsapp.net', '@lid'), deviceId: 0 },
+          identifierKey: buf(signalPubKey(data.account.accountSignatureKey)),
+        }]
+      : [],
+    platform: data.platform,
+  };
+
+  return { creds, keys: {} };
 }
 
 function setStatus(msg, type = 'info') {
@@ -237,7 +347,7 @@ function extractWhatsAppSession() {
       console.log('%c[extract] OK', 'color:green;font-weight:bold',
         { noiseCandidates: noiseCandidates.length, id, lid, registrationId, waWebVersion });
 
-      return { success: true, json, filename, meta: out._meta };
+      return { success: true, json, filename, meta: out._meta, data: out };
     } catch (error) {
       console.error('[extract] erro:', error);
       return { success: false, error: String(error && error.message ? error.message : error) };

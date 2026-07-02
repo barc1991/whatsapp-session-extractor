@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WhatsApp Session Extractor",
-  "version": "1.1",
+  "version": "1.2",
   "description": "Extrai a sessão do WhatsApp Web para importar em bibliotecas como o Baileys, sem ler QR code.",
   "permissions": [
     "activeTab",

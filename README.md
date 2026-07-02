@@ -86,6 +86,17 @@ const creds = {
 
 > O WhatsApp Web pode gerar **vários candidatos de chave Noise** (`noiseCandidates`). Só um é o correto — a implementação do cliente valida o par `private → public`. Se o primeiro não conectar, tente os outros.
 
+### 🎫 Exportar para o Ticketz
+
+Selecione o formato **Ticketz** antes de extrair (ou troque o formato depois da extração). A extensão gera:
+
+- Um JSON no padrão que o Ticketz usa — objeto `{ "creds": { ... }, "keys": {} }` com as chaves binárias no formato `{ "type": "Buffer", "data": "<base64>" }` (o mesmo formato do Baileys). O arquivo baixado é `ticketz-session-AAAAMMDD-HHMMSS.json`.
+- Um **token** alfanumérico de 30 caracteres (ex.: `zW1PGcsch29HlroKaPpYoYb0NvT7Dy`), exibido no popup com botão de copiar, para preencher a **coluna `token`** da conexão no Ticketz.
+
+Para importar: grave o JSON na coluna `session` da conexão e o token na coluna `token`.
+
+> Como no Baileys, quando há mais de um candidato de chave Noise a extensão usa o primeiro. Se a conexão não subir, extraia novamente ou ajuste `creds.noiseKey` para outro candidato.
+
 ### 📂 Estrutura do JSON gerado
 
 | Campo                | Descrição                                                        |
